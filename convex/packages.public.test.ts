@@ -5618,6 +5618,77 @@ describe("packages public queries", () => {
     ]);
   });
 
+  it("filters Claws by their stored category tags without using plugin indexes", async () => {
+    const officialClaw = {
+      family: "claw",
+      channel: "official",
+      isOfficial: true,
+      ownerPublisherId: openClawPublisher._id,
+      ownerHandle: "openclaw",
+      ownerKind: "org",
+    };
+    const { ctx, tableNames } = makeDigestCtx({
+      pages: [
+        {
+          page: [
+            makeDigest("@openclaw/travel-planner", {
+              ...officialClaw,
+              categories: ["travel", "personal"],
+            }),
+            makeDigest("@openclaw/budget-coach", { ...officialClaw, categories: ["finance"] }),
+          ],
+          isDone: true,
+          continueCursor: "",
+        },
+      ],
+      publisherDocs: activeOpenClawPublisherDocs,
+    });
+
+    const result = await listPublicPageHandler(ctx, {
+      family: "claw",
+      category: "travel",
+      paginationOpts: { cursor: null, numItems: 10 },
+    });
+
+    expect(result.page.map((entry) => entry.name)).toEqual(["@openclaw/travel-planner"]);
+    expect(tableNames).toEqual(["packageSearchDigest"]);
+  });
+
+  it("searches Claws within their stored category tags", async () => {
+    const officialClaw = {
+      family: "claw",
+      channel: "official",
+      isOfficial: true,
+      ownerPublisherId: openClawPublisher._id,
+      ownerHandle: "openclaw",
+      ownerKind: "org",
+    };
+    const { ctx, tableNames } = makeDigestCtx({
+      pages: [
+        {
+          page: [
+            makeDigest("@openclaw/travel-planner", { ...officialClaw, categories: ["travel"] }),
+            makeDigest("@openclaw/travel-budget", { ...officialClaw, categories: ["finance"] }),
+          ],
+          isDone: true,
+          continueCursor: "",
+        },
+      ],
+      publisherDocs: activeOpenClawPublisherDocs,
+    });
+
+    const result = await searchPublicHandler(ctx, {
+      query: "travel",
+      family: "claw",
+      category: "travel",
+      limit: 10,
+    });
+
+    expect(result.map((entry) => entry.package.name)).toEqual(["@openclaw/travel-planner"]);
+    expect(tableNames).toContain("packageSearchDigest");
+    expect(tableNames).not.toContain("packagePluginCategorySearchDigest");
+  });
+
   it("uses plugin category digest sort indexes for filtered listings", async () => {
     const { ctx, indexNames } = makeDigestCtx({
       categoryPages: [

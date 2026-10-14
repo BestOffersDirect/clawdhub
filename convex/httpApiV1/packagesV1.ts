@@ -28,6 +28,7 @@ import {
   formatSecurityAuditOverview,
   aggregateAuditVerdict,
   normalizeContentType,
+  isClawCategorySlug,
   isPluginCategorySlug,
   parseArk,
   type ApiV1PackageCategoriesBatchRequest,
@@ -380,6 +381,12 @@ function resolvePluginCategoryFilter(value: string | undefined): PluginCategoryS
   return LEGACY_PLUGIN_CATEGORY_FILTER_ALIASES[
     value as keyof typeof LEGACY_PLUGIN_CATEGORY_FILTER_ALIASES
   ];
+}
+
+function resolvePackageCategoryFilter(value: string | undefined, family: string | undefined) {
+  if (!value) return undefined;
+  if (family === "claw") return value === "other" || isClawCategorySlug(value) ? value : undefined;
+  return resolvePluginCategoryFilter(value);
 }
 
 function parseExcludedScanStatuses(value: string | null) {
@@ -1742,8 +1749,9 @@ async function listPackages(
   if (!highlightedOnlyParam.ok) return text(highlightedOnlyParam.message, 400, rate.headers);
   const sortParam = parseEnumQueryParam(url.searchParams, "sort", PACKAGE_LIST_SORT_VALUES);
   if (!sortParam.ok) return text(sortParam.message, 400, rate.headers);
+  const effectiveFamily = family ?? familyParam.value;
   const rawCategory = url.searchParams.get("category")?.trim() || undefined;
-  const category = resolvePluginCategoryFilter(rawCategory);
+  const category = resolvePackageCategoryFilter(rawCategory, effectiveFamily);
   const topic = url.searchParams.get("topic")?.trim().toLowerCase() || undefined;
   const curated = parseBooleanQueryParam(url.searchParams, "curated");
   if (!curated.ok) return text(curated.message, 400, rate.headers);
@@ -1754,9 +1762,12 @@ async function listPackages(
     return text(excludedScanStatuses.message, 400, rate.headers);
   }
   if (rawCategory && !category) {
-    return text("Invalid plugin category", 400, rate.headers);
+    return text(
+      effectiveFamily === "claw" ? "Invalid Claw category" : "Invalid plugin category",
+      400,
+      rate.headers,
+    );
   }
-  const effectiveFamily = family ?? familyParam.value;
   const includeSkills = options?.includeSkills ?? effectiveFamily === undefined;
   const highlightedOnly = featured.value === true || highlightedOnlyParam.value === true;
   const pluginDefaultSort =
@@ -1768,12 +1779,7 @@ async function listPackages(
       : options?.defaultSort;
   const isLegacyInstallSortRequest = sortParam.value === "installs";
   const effectiveSort = normalizePublicPackageSort(sortParam.value ?? pluginDefaultSort);
-  if (
-    category &&
-    (effectiveFamily === "skill" ||
-      effectiveFamily === "claw" ||
-      (!effectiveFamily && includeSkills))
-  ) {
+  if (category && (effectiveFamily === "skill" || (!effectiveFamily && includeSkills))) {
     return text(
       "Plugin category is only supported for plugin package endpoints",
       400,
@@ -1810,7 +1816,7 @@ async function listPackages(
       isDone: boolean;
       continueCursor: string;
     }>(ctx, internalRefs.packages.listPluginDiscoveryCategoryInternal, {
-      category,
+      category: resolvePluginCategoryFilter(rawCategory),
       family: effectiveFamily,
       channel: channelParam.value,
       isOfficial: isOfficial.value,
@@ -4125,19 +4131,23 @@ async function searchPackages(
   ) {
     return text("Invalid createdAfter", 400, rate.headers);
   }
+  const family = familyParam.value;
   const rawCategory = url.searchParams.get("category")?.trim() || undefined;
-  const category = resolvePluginCategoryFilter(rawCategory);
+  const category = resolvePackageCategoryFilter(rawCategory, family);
   const topic = url.searchParams.get("topic")?.trim().toLowerCase() || undefined;
   const excludedScanStatuses = parseExcludedScanStatuses(url.searchParams.get("excludeScanStatus"));
   if (!excludedScanStatuses.ok) {
     return text(excludedScanStatuses.message, 400, rate.headers);
   }
   if (rawCategory && !category) {
-    return text("Invalid plugin category", 400, rate.headers);
+    return text(
+      family === "claw" ? "Invalid Claw category" : "Invalid plugin category",
+      400,
+      rate.headers,
+    );
   }
-  const family = familyParam.value;
   const includeSkills = options?.includeSkills ?? family === undefined;
-  if (category && (family === "skill" || family === "claw" || (!family && includeSkills))) {
+  if (category && (family === "skill" || (!family && includeSkills))) {
     return text(
       "Plugin category is only supported for plugin package endpoints",
       400,
