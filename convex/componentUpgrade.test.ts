@@ -41,11 +41,10 @@ it("retains consumed quota and queued reports when component implementations cha
     // Register once: replacing registrations would erase component data and queued jobs.
     // The candidate's additive schema is used throughout; this proves runtime continuity,
     // not a backend deployment or schema migration.
-    const registration = {
+    const registration: typeof t = {
       ...t,
-      registerComponent: (
-        ...[name, componentSchema, modules]: Parameters<typeof t.registerComponent>
-      ) => t.registerComponent(name, componentSchema, implementations[name] ?? modules),
+      registerComponent: (name, componentSchema, modules) =>
+        t.registerComponent(name, componentSchema, implementations[name] ?? modules),
     };
     rateLimiter.register(registration);
     workpool.register(registration, "searchReports");
