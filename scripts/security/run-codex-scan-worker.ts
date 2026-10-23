@@ -23,6 +23,12 @@ import {
 } from "../lib/workerRedaction";
 import { writeClawHubEndorProfile } from "./clawHubEndorProfile";
 import {
+  clawScanExposure,
+  type ClawScanExposure,
+  noClawScanExposure,
+  unknownClawScanExposure,
+} from "./clawscan-exposure";
+import {
   EndorContainerCleanupError,
   isEndorPluginScanEnabled,
   runEndorPluginScan,
@@ -150,6 +156,7 @@ type BundledSkillSpectorScanInput = {
 };
 
 export type ClawScanCommandDiagnostic = {
+  exposure?: ClawScanExposure;
   args?: string[];
   artifactPath?: string;
   exitCode?: number | null;
@@ -812,6 +819,7 @@ export async function writeJobDiagnostic(input: JobDiagnosticInput) {
     status: input.status,
     target: sanitizedTargetForDiagnostic(input.job.target),
     clawscanResult: {
+      exposure: input.clawscan?.exposure ?? unknownClawScanExposure(),
       args: input.clawscan?.args,
       exitCode: input.clawscan?.exitCode,
       mapping: input.clawscan?.mapping
@@ -914,6 +922,7 @@ async function fileExists(path: string) {
 
 function codexEnv(workspace: string) {
   const env: NodeJS.ProcessEnv = {
+    CLAWSCAN_PROGRESS: "1",
     NO_COLOR: "1",
     SKILLSPECTOR_PROVIDER: process.env.SKILLSPECTOR_PROVIDER || "openai",
     TEMP: workspace,
@@ -1981,6 +1990,7 @@ export async function runClawScan(
     if (sandbox === "docker" && sandboxImage) args.push("--sandbox-image", sandboxImage);
   }
   onDiagnostic({ args: [command, ...args], artifactPath });
+  onDiagnostic({ exposure: clawScanExposure() });
 
   const captureArtifact = async () => {
     if (!(await fileExists(artifactPath))) return undefined;
@@ -1993,7 +2003,11 @@ export async function runClawScan(
       return undefined;
     }
     const artifact = asRecord(parsedArtifact);
-    if (artifact) onDiagnostic({ mapping: clawScanDiagnosticMapping(artifact, scannerSet) });
+    if (artifact)
+      onDiagnostic({
+        mapping: clawScanDiagnosticMapping(artifact, scannerSet),
+        exposure: clawScanExposure(artifact),
+      });
     return artifact;
   };
 
@@ -2081,6 +2095,7 @@ export function scanHealthClassification(input: {
           : "unclassified"
       : undefined;
   return {
+    exposure: input.clawscan?.exposure ?? unknownClawScanExposure(),
     failureStage,
     judgeStageFailed,
     scannerStageFailed,
@@ -2097,7 +2112,7 @@ export async function processJob(
 ): Promise<ProcessJobResult> {
   const workspace = await mkdtemp(join(tmpdir(), `clawhub-codex-scan-${basename(job.job._id)}-`));
   const startedAt = Date.now();
-  const clawscan: ClawScanCommandDiagnostic = {};
+  const clawscan: ClawScanCommandDiagnostic = { exposure: noClawScanExposure() };
   const endor: EndorCommandDiagnostic = {};
   let errorMessage: string | undefined;
   let scanCompletedAt: number | undefined;
@@ -2192,6 +2207,7 @@ export async function processJob(
       {
         durationMs: Date.now() - startedAt,
         event: "security_scan_job_completed",
+        exposure: clawscan.exposure ?? noClawScanExposure(),
         implementation: "clawscan",
         jobId: job.job._id,
         scannerPhase: "complete",
@@ -2227,6 +2243,7 @@ export async function processJob(
       {
         durationMs: Date.now() - startedAt,
         event: "security_scan_job_failed",
+        exposure: clawscan.exposure ?? noClawScanExposure(),
         jobId: job.job._id,
         publicReason: errorMessage,
         retry: Boolean(failResult?.retry),
