@@ -70,7 +70,7 @@ export async function runWorkerCommand(
     }
   }
   return await new Promise<{ stdout: string; stderr: string }>((resolvePromise, reject) => {
-    const startedAt = Date.now();
+    const startedAt = performance.now();
     const child = spawn(command, args, {
       cwd: options.cwd,
       detached: process.platform !== "win32",
@@ -86,18 +86,21 @@ export async function runWorkerCommand(
     let forceKillTimeout: NodeJS.Timeout | undefined;
     let cleanupTimeout: NodeJS.Timeout | undefined;
     let cleanupStartedAt: number | undefined;
-    const reportTermination = (exitCode: number | null) => {
-      let processGroup: "absent" | "unknown" = "unknown";
+    const processGroupState = (): "absent" | "unknown" => {
       if (process.platform !== "win32" && child.pid) {
         try {
           process.kill(-child.pid, 0);
         } catch (error) {
-          if ((error as NodeJS.ErrnoException).code === "ESRCH") processGroup = "absent";
+          if ((error as NodeJS.ErrnoException).code === "ESRCH") return "absent";
         }
       }
+      return "unknown";
+    };
+    const reportTermination = (exitCode: number | null, processGroup = processGroupState()) => {
+      const finishedAt = performance.now();
       options.onTermination?.({
-        elapsedMs: Date.now() - startedAt,
-        cleanupMs: cleanupStartedAt === undefined ? 0 : Date.now() - cleanupStartedAt,
+        elapsedMs: Math.floor(finishedAt - startedAt),
+        cleanupMs: cleanupStartedAt === undefined ? 0 : Math.floor(finishedAt - cleanupStartedAt),
         processGroup,
         exitCode,
         timedOut,
@@ -117,7 +120,7 @@ export async function runWorkerCommand(
     };
     const terminateProcessTree = () => {
       if (forceKillTimeout) return;
-      cleanupStartedAt = Date.now();
+      cleanupStartedAt = performance.now();
       killProcessTree("SIGTERM");
       forceKillTimeout = setTimeout(() => killProcessTree("SIGKILL"), 10_000);
       forceKillTimeout.unref();
@@ -182,13 +185,31 @@ export async function runWorkerCommand(
       reportTermination(null);
       reject(error);
     });
-    child.on("close", (code) => {
+    child.on("close", async (code) => {
       if (settled) return;
       settled = true;
       clearTimers();
-      if (timedOut || outputLimitExceeded || observerFailed || options.cleanupProcessGroup)
+      const cleanupRequired =
+        timedOut || outputLimitExceeded || observerFailed || options.cleanupProcessGroup;
+      if (cleanupRequired) {
+        cleanupStartedAt ??= performance.now();
         killProcessTree("SIGKILL");
-      reportTermination(code);
+        if (process.platform !== "win32" && child.pid) {
+          await new Promise<void>((resolveCleanup) => {
+            const check = () => {
+              const remainingMs = cleanupStartedAt! + 60_000 - performance.now();
+              if (processGroupState() === "absent" || remainingMs <= 0) {
+                resolveCleanup();
+                return;
+              }
+              setTimeout(check, Math.min(25, remainingMs));
+            };
+            check();
+          });
+        }
+      }
+      const processGroup = processGroupState();
+      reportTermination(code, processGroup);
       const label = options.commandLabel ?? command;
       if (observerFailed) {
         reject(
@@ -212,6 +233,18 @@ export async function runWorkerCommand(
             output.stderr,
             timedOut,
             outputLimitExceeded,
+          ),
+        );
+        return;
+      }
+      if (cleanupRequired && process.platform !== "win32" && processGroup !== "absent") {
+        reject(
+          new CommandFailure(
+            "Worker cleanup could not be confirmed",
+            code,
+            output.stdout,
+            output.stderr,
+            timedOut,
           ),
         );
         return;
