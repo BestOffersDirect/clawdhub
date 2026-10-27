@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { isDeepStrictEqual } from "node:util";
+import { PLUGIN_BUNDLE_MANIFESTS } from "clawhub-schema";
 import { ConvexHttpClient } from "convex/browser";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
@@ -2194,18 +2195,44 @@ async function resolveScanArtifactRoot(workspace: string, job: ClaimedJob) {
 }
 
 export async function resolveClawScanTarget(workspace: string, job: ClaimedJob) {
-  const root = await resolveScanArtifactRoot(workspace, job);
-  const manifests = ["SKILL.md", "openclaw.plugin.json"];
+  const root =
+    job.job.targetKind === "packageRelease" && job.target.release?.artifactKind === "legacy-zip"
+      ? "./artifact"
+      : await resolveScanArtifactRoot(workspace, job);
+  const manifests = [
+    "SKILL.md",
+    "openclaw.plugin.json",
+    ...PLUGIN_BUNDLE_MANIFESTS.map((marker) => marker.path),
+  ];
   const present = await Promise.all(
-    manifests.map(async (name) =>
-      (await lstat(join(workspace, root, name)).catch(() => null))?.isFile(),
-    ),
+    manifests.map(async (name) => {
+      if (name.includes("/")) {
+        const parent = await lstat(join(workspace, root, dirname(name))).catch(() => null);
+        if (parent && !parent.isDirectory()) throw new Error("Unsafe bundle manifest directory");
+      }
+      return (await lstat(join(workspace, root, name)).catch(() => null))?.isFile();
+    }),
   );
-  // ClawScan rejects dual-manifest directories. An explicit manifest selects the
-  // claimed kind while ClawScan still scans the entire dual-layout directory.
-  return present.every(Boolean)
-    ? `${root}/${manifests[job.job.targetKind === "packageRelease" ? 1 : 0]}`
-    : root;
+  if (job.job.targetKind === "packageRelease") {
+    const pkg = job.target.package as Record<string, unknown> | undefined;
+    if (pkg?.family === "claw") return root;
+    // Scan jobs contain already-admitted immutable artifacts. Older bundles may
+    // carry multiple harness manifests or only the native envelope. Preserve
+    // their prior selection order; strict new-publish admission lives separately
+    // in selectPluginManifest. Selecting a manifest still scans the full root.
+    if (pkg?.family === "bundle-plugin") {
+      const marker = PLUGIN_BUNDLE_MANIFESTS.find((_, index) => present[index + 2]);
+      if (marker) return `${root}/${marker.path}`;
+      if (present[1]) return `${root}/openclaw.plugin.json`;
+      throw new Error("Bundle scan requires a supported manifest or legacy native envelope");
+    }
+    if (pkg?.family === "code-plugin") {
+      if (present[1]) return `${root}/openclaw.plugin.json`;
+      throw new Error("openclaw.plugin.json is required for code-plugin scans");
+    }
+    throw new Error("Unsupported plugin input family");
+  }
+  return present[0] && present.slice(1).some(Boolean) ? `${root}/SKILL.md` : root;
 }
 
 export function scanHealthClassification(input: {

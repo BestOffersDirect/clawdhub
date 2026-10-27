@@ -12,6 +12,7 @@ import {
   aggregateSkillSpectorAnalyses,
   normalizeAigAnalysis,
   processJob,
+  resolveClawScanTarget,
   resolveBundledSkillSpectorScanInputs,
   runClawScan,
   writeJobDiagnostic,
@@ -25,6 +26,83 @@ import {
 const tempDirs: string[] = [];
 const execFileAsync = promisify(execFile);
 const sha256 = (content: string) => createHash("sha256").update(content).digest("hex");
+
+it("selects the claimed bundle manifest without narrowing the artifact", async () => {
+  const workspace = await tempDir();
+  await mkdir(join(workspace, "artifact/.claude-plugin"), { recursive: true });
+  await writeFile(join(workspace, "artifact/.claude-plugin/plugin.json"), '{"name":"bundle"}');
+  await writeFile(join(workspace, "artifact/openclaw.plugin.json"), "{}");
+  await writeFile(join(workspace, "artifact/SKILL.md"), "# Inert companion skill");
+  const job = {
+    job: { targetKind: "packageRelease" },
+    target: { package: { family: "bundle-plugin" } },
+  } as unknown as ClaimedJob;
+  await expect(resolveClawScanTarget(workspace, job)).resolves.toBe(
+    "./artifact/.claude-plugin/plugin.json",
+  );
+});
+
+it("does not let a nested package.json relocate a legacy bundle root", async () => {
+  const workspace = await tempDir();
+  await mkdir(join(workspace, "artifact/.claude-plugin"), { recursive: true });
+  await mkdir(join(workspace, "artifact/package"), { recursive: true });
+  await writeFile(join(workspace, "artifact/.claude-plugin/plugin.json"), '{"name":"bundle"}');
+  await writeFile(join(workspace, "artifact/package/package.json"), "{}");
+  const job = {
+    job: { targetKind: "packageRelease" },
+    target: { package: { family: "bundle-plugin" }, release: { artifactKind: "legacy-zip" } },
+  } as unknown as ClaimedJob;
+  await expect(resolveClawScanTarget(workspace, job)).resolves.toBe(
+    "./artifact/.claude-plugin/plugin.json",
+  );
+});
+
+it.each([
+  { family: "code-plugin", paths: [".claude-plugin/plugin.json"] },
+  { family: "unknown", paths: ["openclaw.plugin.json"] },
+  { family: "bundle-plugin", paths: ["SKILL.md"] },
+])("fails closed for mismatched or ambiguous family $family", async ({ family, paths }) => {
+  const workspace = await tempDir();
+  for (const path of paths) {
+    await mkdir(dirname(join(workspace, "artifact", path)), { recursive: true });
+    await writeFile(join(workspace, "artifact", path), "{}");
+  }
+  const job = {
+    job: { targetKind: "packageRelease" },
+    target: { package: { family } },
+  } as unknown as ClaimedJob;
+  await expect(resolveClawScanTarget(workspace, job)).rejects.toThrow();
+});
+
+it.each([
+  {
+    family: "code-plugin",
+    paths: ["openclaw.plugin.json", ".claude-plugin/plugin.json", ".codex-plugin/plugin.json"],
+    selected: "openclaw.plugin.json",
+  },
+  { family: "bundle-plugin", paths: ["openclaw.plugin.json"], selected: "openclaw.plugin.json" },
+  {
+    family: "bundle-plugin",
+    paths: [
+      "openclaw.plugin.json",
+      ".claude-plugin/plugin.json",
+      ".codex-plugin/plugin.json",
+      ".cursor-plugin/plugin.json",
+    ],
+    selected: ".codex-plugin/plugin.json",
+  },
+])("preserves already-admitted legacy $family selection", async ({ family, paths, selected }) => {
+  const workspace = await tempDir();
+  for (const path of paths) {
+    await mkdir(dirname(join(workspace, "artifact", path)), { recursive: true });
+    await writeFile(join(workspace, "artifact", path), '{"name":"legacy","id":"legacy"}');
+  }
+  const job = {
+    job: { targetKind: "packageRelease" },
+    target: { package: { family } },
+  } as unknown as ClaimedJob;
+  await expect(resolveClawScanTarget(workspace, job)).resolves.toBe(`./artifact/${selected}`);
+});
 
 afterEach(async () => {
   vi.restoreAllMocks();
@@ -103,6 +181,7 @@ function claimedJob(input: {
       ...input.target,
       ...(input.targetKind === "packageRelease"
         ? {
+            package: { family: "code-plugin", ...(input.target.package as object) },
             release: {
               ...(input.target.release ?? {}),
               vtAnalysis: input.vtAnalysis ?? null,
@@ -114,6 +193,7 @@ function claimedJob(input: {
 }
 
 function fileTarget(path: string, content: string): ClaimedJob["target"] {
+  const manifest = '{"id":"fixture-plugin"}\n';
   return {
     files: [
       {
@@ -122,6 +202,16 @@ function fileTarget(path: string, content: string): ClaimedJob["target"] {
         size: Buffer.byteLength(content),
         url: `data:text/plain,${encodeURIComponent(content)}`,
       },
+      ...(path === "package.json"
+        ? [
+            {
+              path: "openclaw.plugin.json",
+              sha256: sha256(manifest),
+              size: Buffer.byteLength(manifest),
+              url: `data:application/json,${encodeURIComponent(manifest)}`,
+            },
+          ]
+        : []),
     ],
   };
 }
@@ -336,6 +426,7 @@ PY`,
 
 function pluginPackageJob(jobId: string): ClaimedJob {
   const packageJson = '{"name":"fixture-plugin","version":"1.0.0"}\n';
+  const manifest = '{"id":"fixture-plugin"}\n';
   return claimedJob({
     jobId,
     source: "publish",
@@ -344,6 +435,12 @@ function pluginPackageJob(jobId: string): ClaimedJob {
       package: { name: "@openclaw/fixture-plugin" },
       release: { version: "1.0.0" },
       files: [
+        {
+          path: "package/openclaw.plugin.json",
+          sha256: sha256(manifest),
+          size: Buffer.byteLength(manifest),
+          url: `data:application/json,${encodeURIComponent(manifest)}`,
+        },
         {
           path: "package/package.json",
           sha256: sha256(packageJson),
@@ -1199,7 +1296,7 @@ JSON`,
       name: "package-release publish",
       source: "publish",
       targetKind: "packageRelease" as const,
-      expectedTarget: "./artifact/package",
+      expectedTarget: "./artifact/package/openclaw.plugin.json",
       expectedFile: "./artifact/package/package.json",
       target: clawPackTarget,
     },
@@ -1223,7 +1320,7 @@ JSON`,
       name: "package-release backfill",
       source: "backfill",
       targetKind: "packageRelease" as const,
-      expectedTarget: "./artifact",
+      expectedTarget: "./artifact/openclaw.plugin.json",
       expectedFile: "./artifact/package.json",
       target: async () => fileTarget("package.json", '{"name":"backfill-plugin"}\n'),
     },
@@ -1246,6 +1343,7 @@ JSON`,
       await writeFakeClawScanCommand(
         fakeClawScan,
         `target="$1"
+if [[ -f "$target" ]]; then target="$(dirname "$target")"; fi
 printf '%s\n' "$@" > ${JSON.stringify(argsLog)}
 find "$target" -type f -print | sort > ${JSON.stringify(filesLog)}
 out=""
