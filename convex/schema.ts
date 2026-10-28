@@ -1,5 +1,5 @@
 import { authTables } from "@convex-dev/auth/server";
-import { createClawManifestSummarySchema } from "clawhub-schema";
+import { createTemplateManifestSummarySchema } from "clawhub-schema";
 import { defineSchema, defineTable } from "convex/server";
 import { type GenericValidator, v } from "convex/values";
 import {
@@ -631,6 +631,8 @@ const githubSkillScans = defineTable({
   .index("by_skill_and_content_hash", ["skillId", "contentHash"])
   .index("by_github_source_and_updated_at", ["githubSourceId", "updatedAt"]);
 
+// Live production rows and all derived indexes retain the physical "claw" tag.
+// Public Template names are translated at the package boundary; do not narrow this without a staged data migration.
 const packageFamilyValidator = v.union(
   v.literal("skill"),
   v.literal("code-plugin"),
@@ -776,7 +778,7 @@ export const pluginManifestSummaryValidator = v.object({
   ),
 });
 
-const clawManifestSummaryValidator = createClawManifestSummarySchema<GenericValidator>({
+const clawManifestSummaryValidator = createTemplateManifestSummarySchema<GenericValidator>({
   literalOne: v.literal(1),
   string: v.string(),
   number: v.number(),
@@ -1779,6 +1781,7 @@ const packages = defineTable({
   ownerUserId: v.id("users"),
   ownerPublisherId: v.optional(v.id("publishers")),
   family: packageFamilyValidator,
+  // Physical historical key: public DTOs expose templateProfilePolicyVersion.
   clawProfilePolicyVersion: v.optional(v.literal(1)),
   channel: packageChannelValidator,
   isOfficial: v.boolean(),
@@ -1945,6 +1948,7 @@ const packageReleases = defineTable({
   manifestSearchTerms: v.optional(v.array(v.string())),
   pluginManifestSummary: v.optional(pluginManifestSummaryValidator),
   categoryClassification: v.optional(pluginCategoryClassificationValidator),
+  // Preserve published releases and immutable archive lineage; expose templateManifestSummary on the wire.
   clawManifestSummary: v.optional(clawManifestSummaryValidator),
   compatibility: packageCompatibilityValidator,
   runtimeId: v.optional(v.string()),
@@ -3274,6 +3278,7 @@ const catalogFeedPublications = defineTable({
   payload: v.string(),
   payloadSha256: v.string(),
   publishedAt: v.number(),
+  // Historical storage markers also exist on published empty snapshots. Keep their physical names.
   clawPolicyVersion: v.optional(v.literal(1)),
   clawEntryCount: v.optional(v.number()),
   clawPublisherId: v.optional(v.id("publishers")),
