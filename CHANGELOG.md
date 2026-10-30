@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Publishing: prepare staged ClawPacks in the Node runtime so large archives can reach package validation without exhausting the HTTP action memory limit.
 - Scanning: stop classifying Manifest V3 browser host permissions as installation sources while retaining checks for install URLs elsewhere in the manifest.
 
 - CI: speed up the Linux root typecheck with pinned tsrs while retaining native TypeScript for local checks and package builds.
