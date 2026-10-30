@@ -193,11 +193,13 @@ const internalRefs = internal as unknown as {
   uploads: {
     consumePackagePublishUploadTicketInternal: unknown;
   };
+  publicSkillVersions: {
+    getPublicVersionSelectionInternal: unknown;
+  };
   skills: {
     getSkillBySlugInternal: unknown;
     hasMissingPackageCatalogRecommendationScoresInternal: unknown;
     searchPackageCatalogForHttpInternal: unknown;
-    getPublicVersionSelectionInternal: unknown;
   };
   publishers: {
     getByHandleInternal: unknown;
@@ -3930,7 +3932,7 @@ async function getUnavailableSkillPackageVersionBlock(
 
   const selection = await runQueryRef<PublicSkillVersionSelection>(
     ctx,
-    internalRefs.skills.getPublicVersionSelectionInternal,
+    internalRefs.publicSkillVersions.getPublicVersionSelectionInternal,
     { skillId: skill._id, version: versionName },
   );
   if (selection.status === "deleted") return { status: 410, message: "Version not available" };
@@ -3950,7 +3952,7 @@ async function getSkillVersionForRequest(
   const url = new URL(request.url);
   return await runQueryRef<PublicSkillVersionSelection>(
     ctx,
-    internalRefs.skills.getPublicVersionSelectionInternal,
+    internalRefs.publicSkillVersions.getPublicVersionSelectionInternal,
     {
       skillId: skill._id,
       version: url.searchParams.get("version")?.trim() || undefined,
@@ -4607,7 +4609,7 @@ export async function packagesGetRouterV1Handler(ctx: ActionCtx, request: Reques
     if (skillDetail?.skill) {
       const selection = await runQueryRef<PublicSkillVersionSelection>(
         ctx,
-        internalRefs.skills.getPublicVersionSelectionInternal,
+        internalRefs.publicSkillVersions.getPublicVersionSelectionInternal,
         { skillId: skillDetail.skill._id, version: packageSegments[1] },
       );
       if (selection.status !== "available") return text("Version not found", 404, rate.headers);
