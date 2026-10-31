@@ -11,7 +11,10 @@ import { ApiRoutes } from "clawhub-schema/routes";
 import { getPluginBrowseSnapshotKind } from "../../convex/lib/pluginBrowseSnapshot";
 import { hasOwnProperty } from "./hasOwnProperty";
 import { publicApiUrl } from "./publicApiUrl";
-import { fetchInitialPublicPluginCatalog } from "./publicPluginBrowse";
+import {
+  fetchInitialPublicPluginCatalog,
+  fetchInitialPublicPluginCategory,
+} from "./publicPluginBrowse";
 import { getRuntimeEnv } from "./runtimeEnv";
 import { getPublicClawHubSiteUrl } from "./site";
 
@@ -392,6 +395,23 @@ async function fetchJson<T>(
   return (await response.json()) as T;
 }
 
+async function fetchFastCategorySnapshot(url: URL, signal?: AbortSignal) {
+  signal?.throwIfAborted();
+  const controller = new AbortController();
+  const abortFromNavigation = () => controller.abort(signal?.reason);
+  signal?.addEventListener("abort", abortFromNavigation, { once: true });
+  // Preserve fast CDN hits without waiting seconds for a cold HTTP origin.
+  const timer = setTimeout(() => {
+    controller.abort(new DOMException("Category cache request timed out", "TimeoutError"));
+  }, 250);
+  try {
+    return await fetchJson<PluginCatalogResult>(url, controller.signal, "anonymous");
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener("abort", abortFromNavigation);
+  }
+}
+
 export async function fetchPackages(params: {
   q?: string;
   cursor?: string;
@@ -557,9 +577,25 @@ export async function fetchPluginCatalog(params: {
     url.searchParams.set("excludeScanStatus", params.excludedScanStatuses.join(","));
   }
   if (params.sort) url.searchParams.set("sort", params.sort);
-  if (params.viewerMode === "anonymous" && getPluginBrowseSnapshotKind(url) === "default") {
+  const snapshotKind = params.viewerMode === "anonymous" ? getPluginBrowseSnapshotKind(url) : null;
+  if (snapshotKind === "category") {
     try {
-      const result = await fetchInitialPublicPluginCatalog(params.signal);
+      const result = await fetchFastCategorySnapshot(url, params.signal);
+      return {
+        items: result?.items ?? [],
+        nextCursor: result?.nextCursor ?? null,
+        totalCount: result?.totalCount ?? null,
+      };
+    } catch (error) {
+      if (params.signal?.aborted || isRateLimitedPackageApiError(error)) throw error;
+    }
+  }
+  if (snapshotKind) {
+    try {
+      const result =
+        snapshotKind === "category"
+          ? await fetchInitialPublicPluginCategory(url.searchParams.get("category")!, params.signal)
+          : await fetchInitialPublicPluginCatalog(params.signal);
       return {
         items: result.items,
         nextCursor: result.nextCursor,
